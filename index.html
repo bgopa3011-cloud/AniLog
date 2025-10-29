@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AniLog - Firebase</title>
+<style>
+body { font-family: 'Pretendard', sans-serif; background-color: #f0f0ff; margin:0; padding:0; }
+header { background-color: #7b68ee; color: white; text-align: center; padding:20px 0; font-size:1.5em; font-weight:bold; box-shadow:0 3px 6px rgba(0,0,0,0.15);}
+main { padding:15px; max-width:600px; margin:auto; }
+input, select, textarea, button { width:100%; padding:10px; margin:6px 0; border-radius:6px; font-size:1em; box-sizing:border-box; }
+button { border:none; color:white; cursor:pointer; font-weight:bold; }
+button:hover { opacity:0.9; }
+.add-form, #loginForm { background:#fff; border-radius:12px; padding:15px; box-shadow:0 3px 10px rgba(0,0,0,0.1); margin-bottom:25px; }
+.star-container { font-size:2em; color:#ccc; display:flex; gap:0; margin:10px 0;}
+.star { position:relative; display:inline-block; width:1.5em; cursor:pointer; }
+.star::before { content:"★"; color:#ccc; position:absolute; left:0; top:0; }
+.star.full::before { color:gold; }
+.star.half::before { background: linear-gradient(90deg, gold 50%, #ccc 50%); -webkit-background-clip:text; -webkit-text-fill-color:transparent; color:gold; }
+.anime-card { background:#fff; border-radius:12px; padding:15px; margin-bottom:20px; box-shadow:0 4px 12px rgba(0,0,0,0.12);}
+.anime-header { display:flex; justify-content:space-between; align-items:center; }
+.anime-title { font-size:1.2em; font-weight:bold; color:#5a43cb; cursor:pointer; }
+.delete-btn, .edit-btn, #logoutBtn { background:#ff5c5c; color:white; border:none; border-radius:6px; padding:4px 8px; cursor:pointer; font-size:0.85em; margin-left:5px; }
+.edit-btn { background:#5c9cff; }
+.review { background-color:#f1efff; padding:10px; border-radius:8px; font-size:0.95em; color:#444; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<header>🎬 AniLog</header>
+
+<main>
+<div id="loginForm" class="add-form">
+  <h3>로그인 / 회원가입</h3>
+  <input type="email" id="email" placeholder="이메일">
+  <input type="password" id="password" placeholder="비밀번호">
+  <button onclick="login()">로그인</button>
+  <button onclick="signup()" style="background:#5c9cff;">회원가입</button>
+</div>
+
+<div id="app" style="display:none;">
+  <button id="logoutBtn" onclick="logout()" style="margin-bottom:10px;">로그아웃</button>
+  <div class="add-form">
+    <h3 id="formTitle">＋ 새 애니 추가</h3>
+    <input id="title" type="text" placeholder="애니 제목">
+    <select id="status" onchange="statusChanged()">
+      <option value="완료">완료</option>
+      <option value="시청 중">시청 중</option>
+    </select>
+    <div id="starWrapper">
+      <label>별점 (0.5 단위)</label>
+      <div class="star-container" id="starInput"></div>
+    </div>
+    <div style="margin-top:50px;">
+      <textarea id="review" rows="3" placeholder="감상평을 입력하세요"></textarea>
+    </div>
+    <label>시청 시작 날짜</label>
+    <input id="startDate" type="date">
+    <label id="endDateLabel">완료 날짜</label>
+    <input id="endDate" type="date">
+    <button id="submitBtn" onclick="addOrUpdateAnime()">추가하기</button>
+  </div>
+
+  <ul id="animeList"></ul>
+</div>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+
+<script>
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+// 오늘 날짜
+const today = new Date().toISOString().split('T')[0];
+const startInput = document.getElementById('startDate');
+const endInput = document.getElementById('endDate');
+startInput.setAttribute('max', today);
+endInput.setAttribute('max', today);
+
+let selectedRating = 0;
+let editId = null;
+
+// 별점 입력
+const starInput = document.getElementById('starInput');
+function renderStarInput(rating){
+  starInput.innerHTML='';
+  for(let i=1;i<=5;i++){
+    const star=document.createElement('span');
+    star.classList.add('star');
+    star.dataset.value=i;
+    if(rating>=i){ star.classList.add('full'); }
+    else if(rating>=i-0.5){ star.classList.add('half'); }
+    starInput.appendChild(star);
+  }
+}
+function getStarValueFromEvent(e){
+  const rect = e.target.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  return parseInt(e.target.dataset.value) - (x < rect.width/2 ? 0.5 : 0);
+}
+starInput.addEventListener('mousemove', e=>{
+  if(e.target.classList.contains('star')) renderStarInput(getStarValueFromEvent(e));
+});
+starInput.addEventListener('mouseleave', ()=>renderStarInput(selectedRating));
+starInput.addEventListener('click', e=>{
+  if(e.target.classList.contains('star')){
+    selectedRating = getStarValueFromEvent(e);
+    renderStarInput(selectedRating);
+  }
+});
+
+// 로그인/회원가입
+function signup(){
+  const email=document.getElementById('email').value;
+  const password=document.getElementById('password').value;
+  auth.createUserWithEmailAndPassword(email,password).then(()=>alert('회원가입 완료')).catch(e=>alert(e.message));
+}
+function login(){
+  const email=document.getElementById('email').value;
+  const password=document.getElementById('password').value;
+  auth.signInWithEmailAndPassword(email,password).catch(e=>alert(e.message));
+}
+function logout(){ auth.signOut(); }
+
+// 사용자 상태 감지
+auth.onAuthStateChanged(user=>{
+  if(user){
+    document.getElementById('loginForm').style.display='none';
+    document.getElementById('app').style.display='block';
+    loadAnime();
+  } else {
+    document.getElementById('loginForm').style.display='block';
+    document.getElementById('app').style.display='none';
+  }
+});
+
+// Firestore에 추가/수정
+function addOrUpdateAnime(){
+  const title=document.getElementById('title').value.trim();
+  const status=document.getElementById('status').value;
+  const review=document.getElementById('review').value.trim();
+  const startDate=startInput.value;
+  let endDate=endInput.value;
+  if(!title){ alert('애니 제목을 입력하세요!'); return; }
+  if(status==='완료' && selectedRating<=0){ alert('별점을 선택해주세요'); return; }
+  if(status==='완료' && !endDate) endDate=today;
+  if(status==='시청 중') endDate='';
+
+  const data={title,status,rating:selectedRating,review,startDate,endDate,uid:auth.currentUser.uid};
+
+  if(editId){
+    db.collection('anime').doc(editId).set(data).then(()=>{ resetForm(); editId=null; loadAnime(); });
+  } else {
+    db.collection('anime').add(data).then(()=>resetForm());
+  }
+}
+
+// 데이터 불러오기 (사용자별)
+function loadAnime(){
+  const list = document.getElementById('animeList');
+  list.innerHTML='';
+  db.collection('anime').where('uid','==',auth.currentUser.uid).onSnapshot(snapshot=>{
+    list.innerHTML='';
+    snapshot.forEach(doc=>{
+      const anime = doc.data();
+      const li=document.createElement('li');
+      li.className='anime-card';
+      li.innerHTML=`
+        <div class="anime-header">
+          <div class="anime-title">${anime.title}</div>
+          <div>
+            <button class="edit-btn" onclick="editAnime('${doc.id}')">수정</button>
+            <button class="delete-btn" onclick="deleteAnime('${doc.id}')">삭제</button>
+          </div>
+        </div>
+        <div>📅 ${anime.status} | 별점: ${anime.rating}</div>
+        <div>시작: ${anime.startDate||'-'} | 완료: ${anime.endDate||'-'}</div>
+        <div class="review">${anime.review}</div>
+      `;
+      list.appendChild(li);
+    });
+  });
+}
+
+// 삭제
+function deleteAnime(id){ if(confirm('정말 삭제하시겠습니까?')) db.collection('anime').doc(id).delete(); }
+
+// 수정
+function editAnime(id){
+  db.collection('anime').doc(id).get().then(doc=>{
+    const a=doc.data();
+    editId=id;
+    document.getElementById('title').value=a.title;
+    document.getElementById('status').value=a.status;
+    statusChanged();
+    selectedRating=a.rating;
+    renderStarInput(selectedRating);
+    document.getElementById('review').value=a.review;
+    startInput.value=a.startDate;
+    endInput.value=a.endDate;
+    document.getElementById('submitBtn').innerText='수정 완료';
+    document.getElementById('formTitle').innerText='✎ 애니 수정';
+  });
+}
+
+// 상태 변경 시 별점/완료날짜 처리
+function statusChanged(){
+  const status=document.getElementById('status').value;
+  if(status==='시청 중'){
+    document.getElementById('starWrapper').style.display='none';
+    endInput.style.display='none';
+    document.getElementById('endDateLabel').style.display='none';
+  } else {
+    document.getElementById('starWrapper').style.display='block';
+    endInput.style.display='block';
+    document.getElementById('endDateLabel').style.display='block';
+  }
+}
+
+// 폼 초기화
+function resetForm(){
+  document.getElementById('title').value='';
+  document.getElementById('status').value='완료';
+  statusChanged();
+  selectedRating=0; renderStarInput(selectedRating);
+  document.getElementById('review').value='';
+  startInput.value='';
+  endInput.value='';
+  document.getElementById('submitBtn').innerText='추가하기';
+  document.getElementById('formTitle').innerText='＋ 새 애니 추가';
+}
+</script>
+</body>
+</html>
